@@ -1,0 +1,42 @@
+name: 주간 수급 데이터 수집
+
+on:
+  schedule:
+    # 일요일 22:00 UTC = 월요일 07:00 KST
+    - cron: '0 22 * * 0'
+  workflow_dispatch:
+    inputs:
+      week:
+        description: '수집할 주차 (예: 2026-W35). 비우면 지난주.'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: 의존성 설치
+        run: pip install -r requirements.txt
+
+      - name: 수집 및 적재
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          TZ: Asia/Seoul
+        run: |
+          if [ -n "${{ inputs.week }}" ]; then
+            python main.py --week "${{ inputs.week }}"
+          else
+            python main.py
+          fi
