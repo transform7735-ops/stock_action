@@ -33,7 +33,10 @@ jobs:
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          KRX_ID: ${{ secrets.KRX_ID }} 
+          KRX_PW: ${{ secrets.KRX_PW }} 
           TZ: Asia/Seoul
+          
         run: |
           if [ -n "${{ inputs.week }}" ]; then
             python main.py --week "${{ inputs.week }}"
