@@ -20,6 +20,23 @@ NOTION_VERSION = "2022-06-28"
 # 노션 API는 초당 약 3회로 제한된다. 여유를 두고 호출 간격을 준다.
 THROTTLE_SEC = 0.4
 
+# 종목별 참고 URL 베이스. 종목코드만 있으면 조립되므로 캐싱 불필요.
+NAVER_ITEM_BASE = "https://finance.naver.com/item"
+NAVER_RESEARCH_BASE = "https://finance.naver.com/research"
+
+
+def _stock_urls(ticker: str) -> dict[str, str]:
+    """종목코드로 네이버 증권 관련 URL 4종을 조립한다.
+
+    노션 DB의 URL 열 이름과 정확히 일치해야 한다.
+    """
+    return {
+        "종목페이지": f"{NAVER_ITEM_BASE}/main.naver?code={ticker}",
+        "차트": f"{NAVER_ITEM_BASE}/fchart.naver?code={ticker}",
+        "뉴스": f"{NAVER_ITEM_BASE}/news.naver?code={ticker}",
+        "리포트": f"{NAVER_RESEARCH_BASE}/company_list.naver?searchType=itemCode&itemCode={ticker}",
+    }
+
 
 class NotionSync:
     def __init__(self, token: str, database_id: str):
@@ -78,6 +95,9 @@ class NotionSync:
             props["섹터"] = {
                 "multi_select": [{"name": s} for s in record["섹터"]]
             }
+        # 종목별 참고 URL 4개 (네이버 증권 도메인)
+        for name, url in _stock_urls(record["종목코드"]).items():
+            props[name] = {"url": url}
         return props
 
     # --- 공개 메서드 ---------------------------------------------------
