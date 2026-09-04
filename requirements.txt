@@ -1,2 +1,4 @@
 requests
 notion-client
+pandas
+pykrx
