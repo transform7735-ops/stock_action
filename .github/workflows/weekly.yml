@@ -2,8 +2,8 @@ name: 주간 수급 데이터 수집
 
 on:
   schedule:
-    # 일요일 22:00 UTC = 월요일 07:00 KST
-    - cron: '0 22 * * 0'
+    # 금요일 22:00 UTC = 토요일 07:00 KST
+    - cron: '0 22 * * 5'
   workflow_dispatch:
     inputs:
       week:
