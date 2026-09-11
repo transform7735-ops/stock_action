@@ -30,6 +30,10 @@ STREAK_LOOKBACK_DAYS = 60
 # 일별 상세 조회에서 투자주체 컬럼명. 위 INVESTORS와 다를 수 있어 따로 둔다.
 DAILY_COLUMN = {"외국인": "외국인", "기관합계": "기관합계", "연기금": "연기금"}
 
+# detail=True 상세조회는 '기관합계' 합계 컬럼을 주지 않고 아래 7개로 쪼개서 준다.
+# 기관합계의 연속순매수일은 이 7개를 합산해서 계산해야 한다.
+INSTITUTION_SUBTYPES = ["금융투자", "보험", "투신", "사모", "은행", "기타금융", "연기금"]
+
 
 @dataclass
 class Week:
@@ -125,12 +129,24 @@ def _streak(ticker: str, investor: str, upto: date, cache: dict) -> int | None:
         cache[key] = None
         return None
 
-    if df is None or df.empty or col not in df.columns:
+    if df is None or df.empty:
+        cache[key] = None
+        return None
+
+    if investor == "기관합계":
+        # 상세조회엔 '기관합계' 컬럼이 없다. 하위 7개 투자주체를 합산해서 대신한다.
+        if not all(c in df.columns for c in INSTITUTION_SUBTYPES):
+            cache[key] = None
+            return None
+        series = df[INSTITUTION_SUBTYPES].sum(axis=1)
+    elif col in df.columns:
+        series = df[col]
+    else:
         cache[key] = None
         return None
 
     count = 0
-    for value in reversed(df[col].tolist()):
+    for value in reversed(series.tolist()):
         if value > 0:
             count += 1
         else:
