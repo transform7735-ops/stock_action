@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       week:
-        description: '수집할 주차 (예: 2026-W35). 비우면 지난주.'
+        description: '수집할 주차 (예: 2026-W38). 비우면 지난주.'
         required: false
         type: string
 
