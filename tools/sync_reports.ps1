@@ -92,8 +92,12 @@ foreach ($page in $pages) {
         $edited = To-LocalTime $stamp
         $f = $b.file
         $url = if ($f.type -eq "external") { $f.external.url } else { $f.file.url }
-        $name = $f.name
+        # 원래 파일명은 캡션에 있다 (노션은 첨부 이름의 공백을 _로 바꿔 저장한다)
+        $name = (@($f.caption) | ForEach-Object { $_.plain_text }) -join ""
+        if (-not $name) { $name = $f.name }
         if (-not $name) { $name = [Uri]::UnescapeDataString(([Uri]$url).Segments[-1]) }
+        $name = $name.Trim()
+        if ($name -notmatch " ") { $name = $name -replace "_", " " }
         if ($name -notlike "*.xlsx") { continue }
 
         $target = Join-Path $Dest $name

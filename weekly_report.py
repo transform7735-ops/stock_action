@@ -205,7 +205,9 @@ def notion_report(info: dict, path: Path) -> str | None:
         if not r.ok:
             raise RuntimeError(f"{r.status_code} {r.text[:200]}")
         notion_call("PATCH", f"/blocks/{page['id']}/children", token, json={"children": [{
-            "type": "file", "file": {"type": "file_upload", "file_upload": {"id": fu["id"]}, "name": path.name}}]})
+            "type": "file", "file": {"type": "file_upload", "file_upload": {"id": fu["id"]}, "name": path.name,
+                                     # 노션이 파일명의 공백을 _로 바꿔 저장하므로, PC 동기화가 쓸 원래 이름을 캡션에 남긴다
+                                     "caption": _rt(path.name)}}]})
     except Exception as exc:
         # PC 폴더 동기화가 이 첨부를 내려받으므로 실패하면 실행 전체를 실패로 알린다
         raise RuntimeError(f"엑셀 첨부 실패(보고서 본문은 생성됨): {exc}") from exc
