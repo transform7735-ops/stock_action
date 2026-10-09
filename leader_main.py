@@ -16,7 +16,7 @@ import os
 import sys
 from datetime import date
 
-from leader_screener import load_config, resolve_base_date, screen
+from leader_screener import judge_test, load_config, resolve_base_date, screen
 from notion_sync import NotionSync, _stock_urls
 
 logging.basicConfig(
@@ -50,12 +50,19 @@ class LeaderNotionSync(NotionSync):
             "대장주": {"checkbox": r["대장주"]},
             "첫돌파": {"checkbox": r["첫돌파"]},
             "몸통비율": {"number": r["몸통비율"]},
-            "테마": {"multi_select": [{"name": t[:100]} for t in r["테마"]]},
-            "메모": text(r["메모"]),
+            "윗꼬리비율": {"number": r["윗꼬리비율"]},
+            "장중최고등락률": {"number": r["장중최고등락률"]},
+            "테스트기준가": {"number": r["테스트기준가"]},
+            # 노션 다중선택 값에는 쉼표를 쓸 수 없다
+            "테마": {"multi_select": [{"name": t.replace(",", "·")[:100]} for t in r["테마"]]},
+            "메모": text(r["메모"][:2000]),
             "레코드키": text(r["레코드키"]),
         }
         props["신고가구분"] = (
             {"select": {"name": r["신고가구분"]}} if r["신고가구분"] else {"select": None}
+        )
+        props["물량테스트"] = (
+            {"select": {"name": r["물량테스트"]}} if r["물량테스트"] else {"select": None}
         )
         for name, url in _stock_urls(r["종목코드"]).items():
             if name in ("종목페이지", "차트", "뉴스"):
@@ -65,6 +72,66 @@ class LeaderNotionSync(NotionSync):
     def create_defaults(self) -> dict:
         """새로 만드는 행에만 '판단=관찰'을 넣는다(직접 바꾼 판단은 덮어쓰지 않음)."""
         return {"판단": {"select": {"name": "관찰"}}}
+
+    def pending_tests(self, before_iso: str) -> list[dict]:
+        """물량테스트 '의심'인데 아직 판정이 비어 있는, 기준일 이전 행들."""
+        payload = {
+            "filter": {
+                "and": [
+                    {"property": "물량테스트", "select": {"equals": "의심"}},
+                    {"property": "테스트판정", "select": {"is_empty": True}},
+                    {"property": "기준일", "date": {"before": before_iso}},
+                ]
+            },
+            "page_size": 100,
+        }
+        data = self._request("POST", f"/databases/{self.database_id}/query", json=payload)
+        rows = []
+        for page in data.get("results", []):
+            p = page["properties"]
+            code = "".join(t["plain_text"] for t in p["종목코드"]["rich_text"])
+            ref = p["테스트기준가"]["number"]
+            day = (p["기준일"]["date"] or {}).get("start")
+            if code and ref and day:
+                rows.append({"page_id": page["id"], "종목코드": code, "기준가": ref, "기준일": day})
+        return rows
+
+    def write_verdict(self, page_id: str, v: dict) -> None:
+        self._request(
+            "PATCH",
+            f"/pages/{page_id}",
+            json={
+                "properties": {
+                    "테스트판정": {"select": {"name": v["테스트판정"]}},
+                    "익일등락률": {"number": v["익일등락률"]},
+                }
+            },
+        )
+
+
+def _judge_pending(syncer: LeaderNotionSync, base: str) -> dict[str, int]:
+    """앞선 날의 물량테스트 의심 종목을 다음 거래일 종가로 판정한다."""
+    base_iso = f"{base[:4]}-{base[4:6]}-{base[6:]}"
+    counts = {"지지": 0, "이탈": 0, "대기": 0, "failed": 0}
+    try:
+        rows = syncer.pending_tests(base_iso)
+    except Exception as exc:
+        log.error("판정 대상 조회 실패: %s", exc)
+        return counts
+    for row in rows:
+        try:
+            v = judge_test(row["종목코드"], row["기준일"], row["기준가"], base)
+            if v is None:
+                counts["대기"] += 1
+                continue
+            syncer.write_verdict(row["page_id"], v)
+            counts[v["테스트판정"]] += 1
+            log.info("물량테스트 판정 %s(%s): %s, 익일 %s%%",
+                     row["종목코드"], row["기준일"], v["테스트판정"], v["익일등락률"])
+        except Exception as exc:
+            log.error("판정 실패 %s: %s", row["종목코드"], exc)
+            counts["failed"] += 1
+    return counts
 
 
 def _sync(syncer: LeaderNotionSync, records: list[dict]) -> dict[str, int]:
@@ -104,16 +171,15 @@ def main() -> int:
 
     cfg = load_config()
     records = screen(base, cfg, use_themes=not args.no_themes)
-    if not records:
-        log.info("%s: 조건에 맞는 종목이 없다. 적재할 것 없음.", base)
-        return 0
 
     if args.dry_run:
         for r in records:
             log.info(
-                "[%s] %-12s %6.2f%%  %8.1f억(%d위)  테마동반%d  %s  몸통%s  | %s",
-                r["단계"], r["종목명"], r["등락률"], r["거래대금"], r["거래대금순위"],
-                r["테마동반상승"], r["신고가구분"], r["몸통비율"], r["메모"],
+                "[%s] %-12s %6.2f%%(장중 %s%%)  %8.1f억(%d위)  테마동반%d  %s  "
+                "몸통%s 윗꼬리%s  %s | %s",
+                r["단계"], r["종목명"], r["등락률"], r["장중최고등락률"], r["거래대금"],
+                r["거래대금순위"], r["테마동반상승"], r["신고가구분"], r["몸통비율"],
+                r["윗꼬리비율"], r["물량테스트"] or "", r["메모"],
             )
         return 0
 
@@ -122,10 +188,20 @@ def main() -> int:
     if not token or not db_id:
         log.error("NOTION_TOKEN 또는 NOTION_LEADER_DB_ID 환경변수가 없다.")
         return 1
+    syncer = LeaderNotionSync(token, db_id)
 
-    counts = _sync(LeaderNotionSync(token, db_id), records)
-    log.info("%s 적재 결과: %s", base, counts)
-    return 1 if counts["failed"] else 0
+    failed = 0
+    if records:
+        counts = _sync(syncer, records)
+        log.info("%s 적재 결과: %s", base, counts)
+        failed += counts["failed"]
+    else:
+        log.info("%s: 조건에 맞는 종목이 없다.", base)
+
+    verdicts = _judge_pending(syncer, base)
+    log.info("물량테스트 판정 결과: %s", verdicts)
+    failed += verdicts["failed"]
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

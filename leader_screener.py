@@ -1,13 +1,17 @@
 """
-홍인기식 일일 스크리닝 (끼 종목 → 주도주 깔때기).
+홍인기식 일일 스크리닝 (끼 종목 → 주도주 깔때기) + 물량 테스트 판정.
 
 1단계 '끼 종목'   : 등락률·거래대금이 기준 이상인 종목 (넓은 그물)
 2단계 '주도주'    : 끼 종목 중 아래 조건을 모두 충족
     - 거래대금 순위(KOSPI+KOSDAQ 통합) 상위 N위 이내
-    - 네이버 증권 테마 동반상승 (같은 테마에서 기준 등락률 이상 종목이 M개 이상)
+    - 테마 동반상승 (같은 테마에서 기준 등락률 이상 종목이 M개 이상)
     - 신고가 장대양봉 (종가가 직전 60거래일 고가 돌파 + 몸통비율 기준 이상)
+물량 테스트 의심 : 긴 윗꼬리(윗꼬리비율) + 장중 고점에서 크게 밀림
 
-데이터: pykrx(KRX 정보데이터시스템) + 네이버 증권 테마 페이지
+테마 출처는 아래 순서로 시도한다.
+    1) 네이버 증권 테마 (실시간)
+    2) 직전에 성공한 네이버 테마 캐시 (.cache/themes.json)
+    3) KRX 업종 분류 (테마보다 거칠지만 항상 받을 수 있다)
 """
 
 from __future__ import annotations
@@ -28,14 +32,19 @@ log = logging.getLogger(__name__)
 
 MARKETS = ["KOSPI", "KOSDAQ"]
 NAVER = "https://finance.naver.com"
-UA = {
+HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"
-    )
+    ),
+    "Referer": "https://finance.naver.com/",
+    "Accept-Language": "ko-KR,ko;q=0.9",
 }
-THEME_LINK = re.compile(r"sise_group_detail\.naver\?type=theme&no=(\d+)")
+# 파라미터 순서가 바뀌어도 테마 번호를 잡도록 느슨하게 매칭한다
+THEME_LINK = re.compile(r"sise_group_detail\.naver\?[^\"']*?type=theme[^\"']*?no=(\d+)|"
+                        r"sise_group_detail\.naver\?[^\"']*?no=(\d+)[^\"']*?type=theme")
 ITEM_LINK = re.compile(r"/item/main\.naver\?code=(\w{6})")
+CACHE_PATH = Path(".cache/themes.json")
 
 
 # --- 설정 -----------------------------------------------------------------
@@ -88,39 +97,59 @@ def market_snapshot(base: str) -> pd.DataFrame:
     return df
 
 
-# --- 네이버 테마 -----------------------------------------------------------
+# --- 테마 ----------------------------------------------------------------
 
-def _get(url: str) -> str:
+def _get(url: str, diag: list[str] | None = None) -> str:
     for attempt in range(3):
         try:
-            resp = requests.get(url, headers=UA, timeout=15)
+            resp = requests.get(url, headers=HEADERS, timeout=15)
+            if diag is not None and not diag:
+                # 첫 응답의 상태를 남겨 실패 원인을 로그로 추적한다
+                diag.append(
+                    f"status={resp.status_code} final_url={resp.url} "
+                    f"len={len(resp.content)} type={resp.headers.get('Content-Type')}"
+                )
             resp.raise_for_status()
-            resp.encoding = "euc-kr"
+            enc = (resp.encoding or "").lower()
+            resp.encoding = enc if enc and enc != "iso-8859-1" else "euc-kr"
             return resp.text
         except requests.RequestException as exc:
             log.warning("요청 실패(%d/3) %s: %s", attempt + 1, url, exc)
+            if diag is not None and not diag:
+                diag.append(f"error={exc}")
             time.sleep(2 * (attempt + 1))
     return ""
 
 
-def fetch_theme_map(max_pages: int = 15, pause: float = 0.15) -> dict[str, list[str]]:
-    """테마명 -> 종목코드 목록. 실패하면 빈 dict (테마 조건만 비활성)."""
+def fetch_naver_themes(max_pages: int = 15, pause: float = 0.15) -> dict[str, list[str]]:
+    """네이버 증권 테마: 테마명 -> 종목코드 목록. 실패하면 빈 dict."""
+    diag: list[str] = []
     themes: dict[str, str] = {}
     for page in range(1, max_pages + 1):
-        html = _get(f"{NAVER}/sise/theme.naver?&page={page}")
+        html = _get(f"{NAVER}/sise/theme.naver?page={page}", diag if page == 1 else None)
         if not html:
             break
         soup = BeautifulSoup(html, "lxml")
         found = 0
-        for a in soup.find_all("a", href=THEME_LINK):
-            no = THEME_LINK.search(a["href"]).group(1)
+        for a in soup.find_all("a", href=True):
+            m = THEME_LINK.search(a["href"])
+            if not m:
+                continue
+            no = m.group(1) or m.group(2)
             name = a.get_text(strip=True)
             if name and no not in themes.values():
                 themes[name] = no
                 found += 1
         if found == 0:
+            if page == 1:
+                snippet = re.sub(r"\s+", " ", html[:300])
+                log.warning("네이버 테마 목록 파싱 실패. 응답 앞부분: %s", snippet)
             break
         time.sleep(pause)
+
+    if not themes:
+        log.warning("네이버 테마 수집 실패 (%s)", diag[0] if diag else "응답 없음")
+        return {}
 
     theme_map: dict[str, list[str]] = {}
     for name, no in themes.items():
@@ -134,59 +163,132 @@ def fetch_theme_map(max_pages: int = 15, pause: float = 0.15) -> dict[str, list[
     return theme_map
 
 
+def _save_cache(theme_map: dict[str, list[str]], base: str) -> None:
+    try:
+        CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        CACHE_PATH.write_text(
+            json.dumps({"saved": base, "themes": theme_map}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        log.warning("테마 캐시 저장 실패: %s", exc)
+
+
+def _load_cache() -> tuple[dict[str, list[str]], str | None]:
+    try:
+        data = json.loads(CACHE_PATH.read_text(encoding="utf-8"))
+        return data.get("themes", {}), data.get("saved")
+    except (OSError, ValueError):
+        return {}, None
+
+
+def krx_sector_map(base: str) -> dict[str, list[str]]:
+    """KRX 업종 분류: '업종:반도체' -> 종목코드 목록."""
+    sectors: dict[str, list[str]] = {}
+    for market in MARKETS:
+        try:
+            df = stock.get_market_sector_classifications(base, market)
+        except Exception as exc:
+            log.warning("KRX 업종 조회 실패(%s): %s", market, exc)
+            continue
+        if df is None or df.empty:
+            continue
+        for ticker, sector in df["업종명"].items():
+            sectors.setdefault(f"업종:{sector}", []).append(ticker)
+    log.info("KRX 업종 %d개 수집", len(sectors))
+    return sectors
+
+
+def load_theme_map(base: str) -> tuple[dict[str, list[str]], str]:
+    """(테마맵, 출처설명). 네이버 → 캐시 → KRX 업종 순으로 시도한다."""
+    themes = fetch_naver_themes()
+    if themes:
+        _save_cache(themes, base)
+        return themes, "네이버"
+    cached, saved = _load_cache()
+    if cached:
+        log.info("네이버 실패 → %s 캐시 테마 %d개 사용", saved, len(cached))
+        return cached, f"네이버 캐시({saved})"
+    sectors = krx_sector_map(base)
+    if sectors:
+        return sectors, "KRX 업종 대체"
+    return {}, "없음"
+
+
 def theme_strength(
     ticker: str, snap: pd.DataFrame, theme_map: dict[str, list[str]], up_rate: float
 ) -> tuple[list[str], int, int | None]:
     """종목이 속한 테마 중 동반상승이 가장 강한 테마 기준으로
-    (동반상승 테마목록, 동반상승 종목수 최댓값, 그 테마 내 등락률 순위)를 반환."""
-    best_count, best_rank, hot = 0, None, []
+    (테마목록[동반상승 많은 순], 동반상승 종목수 최댓값, 그 테마 내 등락률 순위)를 반환."""
+    scored = []
+    best_count, best_rank = 0, None
     for theme, codes in theme_map.items():
         if ticker not in codes:
             continue
         members = snap.loc[snap.index.intersection(codes), "등락률"]
         count = int((members >= up_rate).sum())
         rank = int((members > members.get(ticker, -999)).sum()) + 1
-        if count >= 2:
-            hot.append(theme)
+        scored.append((count, theme))
         if count > best_count:
             best_count, best_rank = count, rank
-    return hot, best_count, best_rank
+    scored.sort(reverse=True)
+    return [t for _, t in scored[:5]], best_count, best_rank
 
 
-# --- 신고가 / 장대양봉 -------------------------------------------------------
+# --- 캔들 / 신고가 -----------------------------------------------------------
 
-def price_pattern(ticker: str, base: str, cfg: dict) -> dict:
-    """신고가 구분, 첫돌파 여부, 몸통비율을 계산한다."""
+def candle_shape(row: pd.Series) -> dict:
+    """당일 캔들 모양. 기준일 전종목 시세의 같은 행에서 계산해 날짜가 어긋나지 않게 한다."""
+    o, h, l, c, rate = row["시가"], row["고가"], row["저가"], row["종가"], row["등락률"]
+    rng = h - l
+    prev_close = c / (1 + rate / 100) if rate > -100 else None
+    out = {
+        "몸통비율": None,
+        "윗꼬리비율": None,
+        "장중최고등락률": None,
+        "테스트기준가": float(round((h + l) / 2)) if rng > 0 else None,
+    }
+    if rng > 0:
+        out["몸통비율"] = round(float((c - o) / rng), 2)
+        out["윗꼬리비율"] = round(float((h - max(o, c)) / rng), 2)
+    if prev_close:
+        out["장중최고등락률"] = round(float((h / prev_close - 1) * 100), 2)
+    return out
+
+
+def price_history(ticker: str, base: str, cfg: dict) -> dict:
+    """기준일 이전 일봉으로 신고가 구분과 첫돌파 여부를 계산한다."""
     long_n = cfg["장기신고가_기간"]
     short_n = cfg["주도주_신고가_기간"]
     first_n = cfg["첫돌파_확인_거래일"]
-    start = (datetime.strptime(base, "%Y%m%d") - timedelta(days=long_n * 1.6)).strftime("%Y%m%d")
+    base_dt = datetime.strptime(base, "%Y%m%d")
+    start = (base_dt - timedelta(days=long_n * 1.6)).strftime("%Y%m%d")
 
-    out = {"신고가구분": None, "첫돌파": False, "몸통비율": None}
+    out = {"신고가구분": None, "첫돌파": False}
     try:
         df = stock.get_market_ohlcv_by_date(start, base, ticker)
     except Exception as exc:
         log.warning("일봉 조회 실패 %s: %s", ticker, exc)
         return out
-    if df is None or len(df) < short_n + 1:
+    if df is None or df.empty:
         return out
 
-    today, past = df.iloc[-1], df.iloc[:-1]
-    rng = today["고가"] - today["저가"]
-    if rng > 0:
-        out["몸통비율"] = round(float((today["종가"] - today["시가"]) / rng), 2)
+    past = df[df.index < base_dt]  # 기준일 당일은 제외하고 '직전 고점'만 본다
+    if len(past) < short_n:
+        return out
+    close = float(df[df.index == base_dt]["종가"].iloc[0]) if (df.index == base_dt).any() else None
+    if close is None:
+        return out
 
-    close = today["종가"]
     if len(past) >= long_n and close > past["고가"].tail(long_n).max():
         out["신고가구분"] = f"{long_n}일"
     elif close > past["고가"].tail(short_n).max():
         out["신고가구분"] = f"{short_n}일"
 
-    if out["신고가구분"]:
-        # 직전 first_n 거래일 동안 한 번도 그때의 전고점을 종가로 넘은 적이 없으면 첫돌파
-        ref_high = past["고가"].iloc[: -first_n].tail(short_n).max() if len(past) > first_n else None
-        recent_close = past["종가"].tail(first_n).max()
-        out["첫돌파"] = bool(ref_high is not None and recent_close <= ref_high)
+    if out["신고가구분"] and len(past) > first_n:
+        # 직전 first_n 거래일 동안 그 이전 전고점을 종가로 넘은 적이 없으면 첫돌파
+        ref_high = past["고가"].iloc[:-first_n].tail(short_n).max()
+        out["첫돌파"] = bool(past["종가"].tail(first_n).max() <= ref_high)
     return out
 
 
@@ -206,26 +308,35 @@ def screen(base: str, cfg: dict, use_themes: bool = True) -> list[dict]:
     if kki.empty:
         return []
 
-    theme_map = fetch_theme_map() if use_themes else {}
+    theme_map, source = load_theme_map(base) if use_themes else ({}, "생략")
     base_iso = f"{base[:4]}-{base[4:6]}-{base[6:]}"
     records = []
     for ticker, row in kki.iterrows():
-        hot, together, t_rank = theme_strength(
+        names, together, t_rank = theme_strength(
             ticker, snap, theme_map, cfg["주도주_동반상승_기준등락률"]
         )
-        pat = price_pattern(ticker, base, cfg)
+        shape = candle_shape(row)
+        hist = price_history(ticker, base, cfg)
 
         checks = {
             "거래대금순위": row["거래대금순위"] <= cfg["주도주_거래대금순위_이내"],
             "테마동반상승": together >= cfg["주도주_테마동반상승_최소종목수"],
-            "신고가": pat["신고가구분"] is not None,
-            "장대양봉": (pat["몸통비율"] or 0) >= cfg["주도주_최소몸통비율"],
+            "신고가": hist["신고가구분"] is not None,
+            "장대양봉": (shape["몸통비율"] or 0) >= cfg["주도주_최소몸통비율"],
         }
         is_leader = all(checks.values())
+
+        pullback = (shape["장중최고등락률"] or 0) - float(row["등락률"])
+        suspect = (
+            (shape["윗꼬리비율"] or 0) >= cfg["물량테스트_최소윗꼬리비율"]
+            and pullback >= cfg["물량테스트_최소고점대비밀림_p"]
+        )
+
         missed = [k for k, ok in checks.items() if not ok]
         memo = "주도주 조건 모두 충족" if is_leader else "미충족: " + ", ".join(missed)
-        if use_themes and not theme_map:
-            memo += " (테마 수집 실패)"
+        if suspect:
+            memo += f" | 물량테스트 의심: 장중 +{shape['장중최고등락률']}%에서 {pullback:.1f}%p 밀림"
+        memo += f" | 테마출처: {source}"
 
         records.append(
             {
@@ -238,17 +349,50 @@ def screen(base: str, cfg: dict, use_themes: bool = True) -> list[dict]:
                 "등락률": round(float(row["등락률"]), 2),
                 "거래대금": float(row["거래대금_억"]),
                 "거래대금순위": int(row["거래대금순위"]),
-                "테마": hot[:5],
+                "테마": names,
                 "테마동반상승": together,
                 "테마내순위": t_rank,
                 "대장주": bool(t_rank == 1 and together >= 2),
-                "신고가구분": pat["신고가구분"],
-                "첫돌파": pat["첫돌파"],
-                "몸통비율": pat["몸통비율"],
+                "신고가구분": hist["신고가구분"],
+                "첫돌파": hist["첫돌파"],
+                "몸통비율": shape["몸통비율"],
+                "윗꼬리비율": shape["윗꼬리비율"],
+                "장중최고등락률": shape["장중최고등락률"],
+                "물량테스트": "의심" if suspect else None,
+                "테스트기준가": shape["테스트기준가"] if suspect else None,
                 "메모": memo,
                 "레코드키": f"{base}_{ticker}",
             }
         )
     leaders = sum(r["단계"] == "2차 주도주" for r in records)
-    log.info("%s 주도주 %d개 / 끼 종목 %d개", base, leaders, len(records))
+    tests = sum(r["물량테스트"] == "의심" for r in records)
+    log.info("%s 주도주 %d / 물량테스트 의심 %d / 끼 종목 %d (테마출처: %s)",
+             base, leaders, tests, len(records), source)
     return records
+
+
+# --- 물량 테스트 다음 날 판정 ---------------------------------------------------
+
+def judge_test(ticker: str, base_iso: str, ref_price: float, upto: str) -> dict | None:
+    """테스트일(base_iso) 다음 거래일 종가가 기준가(테스트 캔들 중간값) 위면 '지지'.
+
+    다음 거래일이 아직 없으면 None.
+    """
+    start = base_iso.replace("-", "")
+    try:
+        df = stock.get_market_ohlcv_by_date(start, upto, ticker)
+    except Exception as exc:
+        log.warning("판정용 일봉 조회 실패 %s: %s", ticker, exc)
+        return None
+    if df is None or df.empty:
+        return None
+    nxt = df[df.index > datetime.strptime(start, "%Y%m%d")]
+    if nxt.empty:
+        return None
+    day = nxt.iloc[0]
+    held = float(day["종가"]) >= ref_price
+    return {
+        "테스트판정": "지지" if held else "이탈",
+        "익일등락률": round(float(day["등락률"]), 2),
+        "판정일": nxt.index[0].strftime("%Y-%m-%d"),
+    }
