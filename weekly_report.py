@@ -1,18 +1,17 @@
 """
-주간 수급 분석 엑셀 생성 -> 구글 드라이브 · 노션 · 메일 전달.
+주간 수급 분석 엑셀 생성 -> 노션 보고서 페이지(요약·표·엑셀 첨부).
 
 토요일 수급 적재(main.py)가 끝난 뒤 같은 워크플로에서 실행된다.
+PC 폴더 저장은 PC의 작업 스케줄러가 tools/sync_reports.ps1로 노션 첨부 엑셀을 내려받아 처리한다.
 
 사용법:
-    python weekly_report.py                         # 노션 DB 전체로 만들고 전달까지
+    python weekly_report.py                         # 노션 DB 전체로 만들고 노션 보고서까지
     python weekly_report.py --no-deliver            # 파일만 만든다
     python weekly_report.py --from-xlsx 파일.xlsx    # 노션 대신 내보낸 엑셀로 만든다 (스킬용)
 
-환경변수 (없는 항목은 그 전달 경로만 건너뛴다):
+환경변수:
     NOTION_TOKEN, NOTION_DATABASE_ID          노션 수급 DB 읽기 (필수, --from-xlsx면 불필요)
     NOTION_REPORT_PAGE_ID                     노션 보고서를 만들 상위 페이지
-    GDRIVE_CLIENT_ID, GDRIVE_CLIENT_SECRET, GDRIVE_REFRESH_TOKEN, GDRIVE_FOLDER_NAME
-    GMAIL_USER, GMAIL_APP_PASSWORD, MAIL_TO
 """
 
 from __future__ import annotations
@@ -22,12 +21,10 @@ import json
 import logging
 import os
 import shutil
-import smtplib
 import subprocess
 import sys
 import tempfile
 import time
-from email.message import EmailMessage
 from pathlib import Path
 
 import pandas as pd
@@ -141,54 +138,6 @@ def recalc(path: Path) -> bool:
         return ok
 
 
-# --- 구글 드라이브 ----------------------------------------------------------------
-
-def gdrive_upload(path: Path) -> str | None:
-    cid, secret, refresh = (os.environ.get(k) for k in ("GDRIVE_CLIENT_ID", "GDRIVE_CLIENT_SECRET", "GDRIVE_REFRESH_TOKEN"))
-    if not (cid and secret and refresh):
-        log.info("구글 드라이브 설정 없음: 건너뜀")
-        return None
-    tok = requests.post("https://oauth2.googleapis.com/token", timeout=30, data={
-        "client_id": cid, "client_secret": secret, "refresh_token": refresh, "grant_type": "refresh_token"})
-    if not tok.ok:
-        raise RuntimeError(f"구글 토큰 갱신 실패: {tok.status_code} {tok.text[:200]}")
-    auth = {"Authorization": f"Bearer {tok.json()['access_token']}"}
-    api = "https://www.googleapis.com/drive/v3/files"
-    folder_name = os.environ.get("GDRIVE_FOLDER_NAME") or "주간 수급 분석"
-
-    def find(q):
-        r = requests.get(api, headers=auth, timeout=30, params={"q": q, "fields": "files(id,name,webViewLink)", "spaces": "drive"})
-        r.raise_for_status()
-        return r.json()["files"]
-
-    esc = lambda s: s.replace("'", "\\'")
-    folders = find(f"name='{esc(folder_name)}' and mimeType='application/vnd.google-apps.folder' and trashed=false")
-    if folders:
-        folder_id = folders[0]["id"]
-    else:
-        r = requests.post(api, headers=auth, timeout=30, params={"fields": "id"},
-                          json={"name": folder_name, "mimeType": "application/vnd.google-apps.folder"})
-        r.raise_for_status()
-        folder_id = r.json()["id"]
-        log.info("드라이브 폴더 '%s' 생성", folder_name)
-
-    existing = find(f"name='{esc(path.name)}' and '{folder_id}' in parents and trashed=false")
-    meta = {"name": path.name} if existing else {"name": path.name, "parents": [folder_id]}
-    files = {"metadata": (None, json.dumps(meta), "application/json; charset=UTF-8"),
-             "file": (path.name, path.read_bytes(), XLSX_MIME)}
-    up = "https://www.googleapis.com/upload/drive/v3/files"
-    params = {"uploadType": "multipart", "fields": "id,webViewLink"}
-    if existing:
-        r = requests.patch(f"{up}/{existing[0]['id']}", headers=auth, params=params, files=files, timeout=120)
-    else:
-        r = requests.post(up, headers=auth, params=params, files=files, timeout=120)
-    if not r.ok:
-        raise RuntimeError(f"드라이브 업로드 실패: {r.status_code} {r.text[:200]}")
-    link = r.json().get("webViewLink")
-    log.info("드라이브 %s: %s", "갱신" if existing else "업로드", link)
-    return link
-
-
 # --- 노션 보고서 페이지 --------------------------------------------------------------
 
 def _rt(text: str, bold: bool = False, link: str | None = None) -> list:
@@ -207,7 +156,7 @@ def _table(header: list[str], rows: list[list]) -> dict:
                                        "has_row_header": False, "children": [row(header)] + [row(r) for r in rows]}}
 
 
-def notion_report(info: dict, path: Path, drive_link: str | None) -> str | None:
+def notion_report(info: dict, path: Path) -> str | None:
     token, parent = os.environ.get("NOTION_TOKEN"), os.environ.get("NOTION_REPORT_PAGE_ID")
     if not (token and parent):
         log.info("노션 보고서 상위 페이지 설정 없음: 건너뜀")
@@ -242,9 +191,8 @@ def notion_report(info: dict, path: Path, drive_link: str | None) -> str | None:
                  eok(c["합계"])] for i, c in enumerate(info["cumulative"])]),
         {"type": "heading_2", "heading_2": {"rich_text": _rt("엑셀 원본")}},
     ]
-    if drive_link:
-        children.append({"type": "paragraph", "paragraph": {
-            "rich_text": _rt("구글 드라이브에서 열기 (PC 폴더와 동기화됨)", link=drive_link)}})
+    children.append({"type": "paragraph", "paragraph": {"rich_text": _rt(
+        "아래 첨부 엑셀은 PC의 '주간 수급 분석' 폴더로 자동 동기화됩니다 (tools/sync_reports.ps1).")}})
     page = notion_call("POST", "/pages", token, json={
         "parent": {"page_id": parent}, "icon": {"type": "emoji", "emoji": "📊"},
         "properties": {"title": {"title": _rt(title)}}, "children": children})
@@ -259,37 +207,10 @@ def notion_report(info: dict, path: Path, drive_link: str | None) -> str | None:
         notion_call("PATCH", f"/blocks/{page['id']}/children", token, json={"children": [{
             "type": "file", "file": {"type": "file_upload", "file_upload": {"id": fu["id"]}, "name": path.name}}]})
     except Exception as exc:
-        log.warning("노션 엑셀 첨부 실패(보고서 본문은 생성됨): %s", exc)
-        gh_annotate("warning", f"노션 엑셀 첨부 실패: {exc}")
+        # PC 폴더 동기화가 이 첨부를 내려받으므로 실패하면 실행 전체를 실패로 알린다
+        raise RuntimeError(f"엑셀 첨부 실패(보고서 본문은 생성됨): {exc}") from exc
     log.info("노션 보고서: %s", page["url"])
     return page["url"]
-
-
-# --- 메일 -----------------------------------------------------------------------
-
-def send_mail(info: dict, path: Path, drive_link: str | None, notion_link: str | None) -> bool:
-    user, pw = os.environ.get("GMAIL_USER"), os.environ.get("GMAIL_APP_PASSWORD")
-    if not (user and pw):
-        log.info("메일 설정 없음: 건너뜀")
-        return False
-    to = os.environ.get("MAIL_TO") or user
-    msg = EmailMessage()
-    msg["Subject"] = f"[주간 수급] {info['title']} 분석 완료 ({info['week']})"
-    msg["From"], msg["To"] = user, to
-    lines = [f"{info['title']} 주간 수급 분석이 갱신되었습니다.", ""] + info["insights"] + [""]
-    if notion_link:
-        lines.append(f"노션 보고서: {notion_link}")
-    if drive_link:
-        lines.append(f"구글 드라이브: {drive_link}")
-    lines += ["", "엑셀 파일을 첨부합니다. (PC의 '주간 수급 분석' 폴더에도 동기화됩니다)"]
-    msg.set_content("\n".join(lines))
-    msg.add_attachment(path.read_bytes(), maintype="application",
-                       subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet", filename=path.name)
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=60) as smtp:
-        smtp.login(user, pw)
-        smtp.send_message(msg)
-    log.info("메일 발송: %s", to)
-    return True
 
 
 # --- 실행 -----------------------------------------------------------------------
@@ -298,7 +219,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--from-xlsx", help="노션 대신 이 엑셀(노션 내보내기 형식)로 만든다")
     ap.add_argument("--out", default="reports", help="엑셀을 저장할 폴더")
-    ap.add_argument("--no-deliver", action="store_true", help="드라이브·노션·메일 전달을 하지 않는다")
+    ap.add_argument("--no-deliver", action="store_true", help="노션 보고서를 만들지 않는다")
     ap.add_argument("--no-recalc", action="store_true")
     args = ap.parse_args()
 
@@ -326,27 +247,13 @@ def main() -> int:
         print(json.dumps({k: info[k] for k in ("week", "filename", "insights")}, ensure_ascii=False, indent=2))
         return 0
 
-    failed = []
-    drive_link = notion_link = None
     try:
-        drive_link = gdrive_upload(path)
+        notion_report(info, path)
     except Exception as exc:
-        failed.append("드라이브")
-        log.error("드라이브 실패: %s", exc)
-        gh_annotate("error", f"구글 드라이브 업로드 실패: {exc}")
-    try:
-        notion_link = notion_report(info, path, drive_link)
-    except Exception as exc:
-        failed.append("노션")
         log.error("노션 보고서 실패: %s", exc)
         gh_annotate("error", f"노션 보고서 실패: {exc}")
-    try:
-        send_mail(info, path, drive_link, notion_link)
-    except Exception as exc:
-        failed.append("메일")
-        log.error("메일 실패: %s", exc)
-        gh_annotate("error", f"메일 발송 실패: {exc}")
-    return 1 if failed else 0
+        return 1
+    return 0
 
 
 if __name__ == "__main__":

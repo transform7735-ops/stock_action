@@ -113,13 +113,19 @@ python leader_main.py --date 2026-10-07    # 특정일 소급
 1. 노션 '주간 수급 데이터' DB 전체를 읽어 `report_builder.py`로 엑셀을 만든다
    (`26 10월 둘째주 수급누적.xlsx` 형식, '수급분석' 시트 = 수식 기반 피벗 4종 + 차트 2개 + 자동 요약).
 2. LibreOffice로 수식 계산값을 채운다.
-3. 전달: 구글 드라이브 `주간 수급 분석` 폴더(→ PC 동기화) · 노션 '📊 주간 수급 분석 보고서' 하위 페이지 · Gmail 알림(첨부).
-   비밀값이 없는 전달 경로는 건너뛴다.
-
-| 비밀값 | 용도 |
-|---|---|
-| `GDRIVE_CLIENT_ID`, `GDRIVE_CLIENT_SECRET`, `GDRIVE_REFRESH_TOKEN` | 구글 드라이브 업로드 (OAuth, `drive.file` 범위) |
-| `GMAIL_USER`, `GMAIL_APP_PASSWORD` | 완료 메일 (Gmail 앱 비밀번호) |
+3. 노션 '📊 주간 수급 분석 보고서' 아래에 주차별 페이지(요약·신호판·누적 상위·엑셀 첨부)를 만든다.
+   같은 주를 다시 돌리면 이전 페이지는 보관(archive)하고 새로 만든다.
+4. PC 폴더 저장은 PC의 작업 스케줄러가 맡는다 → 아래 'PC 폴더 동기화'.
 
 수동 실행: Actions → 주간 수급 데이터 수집 → Run workflow → `report_only` 체크 (수집 없이 분석만).
 로컬: `python weekly_report.py --from-xlsx 노션내보내기.xlsx --no-deliver`
+
+### PC 폴더 동기화 (Windows, 한 번 설정)
+
+클라우드는 PC에 직접 쓸 수 없으므로, PC가 노션 보고서의 첨부 엑셀을 내려받는다.
+
+1. `tools/install_sync_task.ps1`, `tools/sync_reports.ps1`을 PC의 같은 폴더에 둔다.
+2. 그 폴더에서 `powershell -ExecutionPolicy Bypass -File install_sync_task.ps1` 실행
+   → 노션 연동 '라르'의 시크릿 입력(이 PC 사용자 계정으로 암호화 저장) → 작업 '주간 수급 분석 동기화' 등록 → 첫 동기화.
+3. 매일 08:30 확인하고, 새 보고서가 있을 때만 `C:\Users\S.J.KO\Documents\T_room\stock-autotrader\주간 수급 분석`에 저장한다.
+   PC가 꺼져 있었으면 켜진 뒤 바로 실행한다. 기록은 그 폴더의 `_sync.log`.
