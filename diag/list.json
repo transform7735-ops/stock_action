@@ -1,0 +1,179 @@
+{
+ "stockListSortType": "THEME",
+ "groups": [
+  {
+   "no": 591,
+   "name": "서울고속버스터미널 재개발 수혜",
+   "totalCount": 5,
+   "changeRate": "7.24",
+   "riseCount": 2,
+   "fallCount": 3,
+   "steadyCount": 0
+  },
+  {
+   "no": 501,
+   "name": "리비안(RIVIAN)",
+   "totalCount": 21,
+   "changeRate": "3.51",
+   "riseCount": 15,
+   "fallCount": 6,
+   "steadyCount": 0
+  },
+  {
+   "no": 608,
+   "name": "반도체 기판(FC-BGA/PCB/MLB 등)",
+   "totalCount": 14,
+   "changeRate": "2.93",
+   "riseCount": 10,
+   "fallCount": 4,
+   "steadyCount": 0
+  },
+  {
+   "no": 579,
+   "name": "2차전지(나트륨이온)",
+   "totalCount": 9,
+   "changeRate": "2.50",
+   "riseCount": 8,
+   "fallCount": 1,
+   "steadyCount": 0
+  },
+  {
+   "no": 45,
+   "name": "캐릭터상품",
+   "totalCount": 9,
+   "changeRate": "2.28",
+   "riseCount": 5,
+   "fallCount": 4,
+   "steadyCount": 0
+  },
+  {
+   "no": 319,
+   "name": "화학섬유",
+   "totalCount": 6,
+   "changeRate": "2.26",
+   "riseCount": 3,
+   "fallCount": 3,
+   "steadyCount": 0
+  },
+  {
+   "no": 16,
+   "name": "구제역/광우병 수혜",
+   "totalCount": 19,
+   "changeRate": "2.09",
+   "riseCount": 13,
+   "fallCount": 6,
+   "steadyCount": 0
+  },
+  {
+   "no": 287,
+   "name": "PCB(FPCB 등)",
+   "totalCount": 31,
+   "changeRate": "2.06",
+   "riseCount": 17,
+   "fallCount": 13,
+   "steadyCount": 1
+  },
+  {
+   "no": 446,
+   "name": "2차전지(소재/부품)",
+   "totalCount": 73,
+   "changeRate": "1.86",
+   "riseCount": 37,
+   "fallCount": 34,
+   "steadyCount": 2
+  },
+  {
+   "no": 9,
+   "name": "OLED(유기 발광 다이오드)",
+   "totalCount": 80,
+   "changeRate": "1.72",
+   "riseCount": 50,
+   "fallCount": 26,
+   "steadyCount": 4
+  },
+  {
+   "no": 449,
+   "name": "2차전지(생산)",
+   "totalCount": 3,
+   "changeRate": "1.72",
+   "riseCount": 3,
+   "fallCount": 0,
+   "steadyCount": 0
+  },
+  {
+   "no": 496,
+   "name": "골프",
+   "totalCount": 15,
+   "changeRate": "1.64",
+   "riseCount": 6,
+   "fallCount": 9,
+   "steadyCount": 0
+  },
+  {
+   "no": 564,
+   "name": "전기차 화재 방지(배터리 열폭주 등)",
+   "totalCount": 28,
+   "changeRate": "1.54",
+   "riseCount": 14,
+   "fallCount": 11,
+   "steadyCount": 3
+  },
+  {
+   "no": 14,
+   "name": "반도체 재료/부품",
+   "totalCount": 71,
+   "changeRate": "1.49",
+   "riseCount": 40,
+   "fallCount": 30,
+   "steadyCount": 1
+  },
+  {
+   "no": 12,
+   "name": "반도체 장비",
+   "totalCount": 96,
+   "changeRate": "1.42",
+   "riseCount": 59,
+   "fallCount": 34,
+   "steadyCount": 3
+  },
+  {
+   "no": 48,
+   "name": "영화",
+   "totalCount": 12,
+   "changeRate": "1.41",
+   "riseCount": 6,
+   "fallCount": 6,
+   "steadyCount": 0
+  },
+  {
+   "no": 592,
+   "name": "부동산 보유 자산주",
+   "totalCount": 22,
+   "changeRate": "1.39",
+   "riseCount": 6,
+   "fallCount": 14,
+   "steadyCount": 2
+  },
+  {
+   "no": 64,
+   "name": "2차전지",
+   "totalCount": 143,
+   "changeRate": "1.33",
+   "riseCount": 76,
+   "fallCount": 62,
+   "steadyCount": 5
+  },
+  {
+   "no": 557,
+   "name": "유리 기판",
+   "totalCount": 21,
+   "changeRate": "1.32",
+   "riseCount": 11,
+   "fallCount": 9,
+   "steadyCount": 1
+  },
+  {
+   "no": 171,
+   "name": "비철금속",
+   "totalCount": 25,
+   "ch
