@@ -13,7 +13,9 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import re
 import sys
+import time
 from datetime import date
 
 from leader_screener import judge_test, load_config, resolve_base_date, screen
@@ -153,19 +155,65 @@ def _sync(syncer: LeaderNotionSync, records: list[dict]) -> dict[str, int]:
                 counts["created"] += 1
         except Exception as exc:
             log.error("적재 실패 %s: %s", r["레코드키"], exc)
+            if not counts["failed"]:
+                gh_annotate("error", f"노션 적재 실패 예시 {r['종목명']}: {str(exc)[:300]}")
             counts["failed"] += 1
     return counts
 
 
+def gh_annotate(level: str, msg: str) -> None:
+    """GitHub Actions 실행 요약 화면의 '주석'에 메시지를 띄운다(로그를 안 열어도 보이게)."""
+    if os.environ.get("GITHUB_ACTIONS"):
+        print(f"::{level} title=주도주 스크리닝::{msg.replace(chr(10), ' ')}", flush=True)
+
+
+def parse_date(text: str | None) -> date | None:
+    """2026-10-07, 20261007, 2026.10.07, 2026/10/7, 10/7 처럼 흔한 입력을 모두 받는다."""
+    if not text or not text.strip():
+        return None
+    nums = re.findall(r"\d+", text)
+    if len(nums) == 1 and len(nums[0]) == 8:
+        y, m, d = int(nums[0][:4]), int(nums[0][4:6]), int(nums[0][6:])
+    elif len(nums) == 3:
+        y, m, d = (int(n) for n in nums)
+    elif len(nums) == 2:  # 연도 생략
+        y, (m, d) = date.today().year, (int(n) for n in nums)
+    else:
+        raise ValueError(f"날짜를 읽을 수 없다: '{text}' (예: 2026-10-07)")
+    return date(y, m, d)
+
+
+def resolve_with_retry(target: date | None) -> str:
+    """KRX 첫 접속이 일시적으로 실패하는 경우가 있어 몇 번 다시 시도한다."""
+    last = None
+    for attempt in range(4):
+        try:
+            return resolve_base_date(target)
+        except Exception as exc:
+            last = exc
+            log.warning("기준일 조회 실패(%d/4): %s", attempt + 1, exc)
+            time.sleep(5 * (attempt + 1))
+    raise RuntimeError(f"KRX 기준일 조회 실패: {last}")
+
+
 def main() -> int:
+    try:
+        return run()
+    except Exception as exc:
+        log.exception("실행 실패")
+        gh_annotate("error", f"{type(exc).__name__}: {exc}")
+        return 1
+
+
+def run() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--date", help="기준일 YYYY-MM-DD. 비우면 가장 최근 영업일")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--no-themes", action="store_true")
     args = parser.parse_args()
 
-    target = date.fromisoformat(args.date) if args.date else None
-    base = resolve_base_date(target)
+    target = parse_date(args.date)
+    base = resolve_with_retry(target)
     if target and base != target.strftime("%Y%m%d"):
         log.info("%s는 휴장일이라 직전 영업일 %s 기준으로 수집한다.", target, base)
 
@@ -201,6 +249,17 @@ def main() -> int:
     verdicts = _judge_pending(syncer, base)
     log.info("물량테스트 판정 결과: %s", verdicts)
     failed += verdicts["failed"]
+
+    source = records[0]["메모"].split("테마출처: ")[-1] if records else "-"
+    summary = (
+        f"{base} 끼 {len(records)}종목 · 주도주 "
+        f"{sum(r['단계'] == '2차 주도주' for r in records)} · 물량테스트 의심 "
+        f"{sum(r['물량테스트'] == '의심' for r in records)} · 테마출처 {source} · "
+        f"판정 지지 {verdicts['지지']}/이탈 {verdicts['이탈']}"
+    )
+    gh_annotate("notice", summary)
+    if failed:
+        gh_annotate("error", f"노션 적재/판정 실패 {failed}건 (로그의 '적재 실패' 줄 참고)")
     return 1 if failed else 0
 
 
