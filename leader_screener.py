@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import time
 from datetime import date, datetime, timedelta
@@ -144,11 +145,15 @@ def fetch_naver_themes(max_pages: int = 15, pause: float = 0.15) -> dict[str, li
             if page == 1:
                 snippet = re.sub(r"\s+", " ", html[:300])
                 log.warning("네이버 테마 목록 파싱 실패. 응답 앞부분: %s", snippet)
+                diag.append(f"파싱 실패, 응답 앞부분: {snippet[:150]}")
             break
         time.sleep(pause)
 
     if not themes:
-        log.warning("네이버 테마 수집 실패 (%s)", diag[0] if diag else "응답 없음")
+        reason = " / ".join(diag) if diag else "응답 없음"
+        log.warning("네이버 테마 수집 실패 (%s)", reason)
+        if os.environ.get("GITHUB_ACTIONS"):
+            print(f"::warning title=네이버 테마::수집 실패 {reason}", flush=True)
         return {}
 
     theme_map: dict[str, list[str]] = {}
