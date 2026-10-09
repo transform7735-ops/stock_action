@@ -10,6 +10,11 @@ on:
         description: '수집할 주차 (예: 2026-W38). 비우면 지난주.'
         required: false
         type: string
+      report_only:
+        description: '수집은 건너뛰고 분석 엑셀만 다시 만들기'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -17,7 +22,7 @@ permissions:
 jobs:
   collect:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -30,16 +35,46 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: 수집 및 적재
+        if: ${{ !inputs.report_only }}
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
-          KRX_ID: ${{ secrets.KRX_ID }} 
-          KRX_PW: ${{ secrets.KRX_PW }} 
+          KRX_ID: ${{ secrets.KRX_ID }}
+          KRX_PW: ${{ secrets.KRX_PW }}
           TZ: Asia/Seoul
-          
         run: |
           if [ -n "${{ inputs.week }}" ]; then
             python main.py --week "${{ inputs.week }}"
           else
             python main.py
           fi
+
+      # 엑셀 수식의 계산값을 채우기 위한 LibreOffice (드라이브·폰 미리보기에서도 숫자가 보이게)
+      - name: LibreOffice 설치
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends libreoffice-calc > /dev/null
+
+      - name: 주간 수급 분석 엑셀 생성 및 전달
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          # 노션 '📊 주간 수급 분석 보고서' 페이지. ID는 토큰 없이는 쓸모없어 비밀값이 아니다.
+          NOTION_REPORT_PAGE_ID: 3f4ce99325d481b986a5c39dd6c641ae
+          GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
+          GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
+          GDRIVE_REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
+          GDRIVE_FOLDER_NAME: 주간 수급 분석
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          TZ: Asia/Seoul
+        run: python weekly_report.py --out reports
+
+      - name: 분석 엑셀 보관 (Actions 실행 화면에서도 내려받기)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: weekly-report
+          path: reports/*.xlsx
+          if-no-files-found: ignore
+          retention-days: 90

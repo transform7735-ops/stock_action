@@ -4,3 +4,4 @@ pandas
 pykrx>=1.0.50
 beautifulsoup4
 lxml
+openpyxl
