@@ -64,11 +64,12 @@ jobs:
           TZ: Asia/Seoul
         run: python weekly_report.py --out reports
 
-      - name: 분석 엑셀 보관 (Actions 실행 화면에서도 내려받기)
-        if: always()
+      # 저장 위치는 노션과 PC뿐이다. 노션 단계가 실패한 날에만 엑셀을 잃지 않게 7일간 임시 보관한다.
+      - name: 노션 실패 시 엑셀 임시 보관
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: weekly-report
           path: reports/*.xlsx
           if-no-files-found: ignore
-          retention-days: 90
+          retention-days: 7
