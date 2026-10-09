@@ -9,7 +9,7 @@
 물량 테스트 의심 : 긴 윗꼬리(윗꼬리비율) + 장중 고점에서 크게 밀림
 
 테마 출처는 아래 순서로 시도한다.
-    1) 네이버 증권 테마 (실시간)
+    1) 네이버 증권 테마 (모바일 JSON API, 실시간)
     2) 직전에 성공한 네이버 테마 캐시 (.cache/themes.json)
     3) KRX 업종 분류 (테마보다 거칠지만 항상 받을 수 있다)
 """
@@ -26,25 +26,20 @@ from pathlib import Path
 
 import pandas as pd
 import requests
-from bs4 import BeautifulSoup
 from pykrx import stock
 
 log = logging.getLogger(__name__)
 
 MARKETS = ["KOSPI", "KOSDAQ"]
-NAVER = "https://finance.naver.com"
+NAVER_API = "https://m.stock.naver.com/api/stocks"
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"
     ),
-    "Referer": "https://finance.naver.com/",
+    "Referer": "https://m.stock.naver.com/",
     "Accept-Language": "ko-KR,ko;q=0.9",
 }
-# 파라미터 순서가 바뀌어도 테마 번호를 잡도록 느슨하게 매칭한다
-THEME_LINK = re.compile(r"sise_group_detail\.naver\?[^\"']*?type=theme[^\"']*?no=(\d+)|"
-                        r"sise_group_detail\.naver\?[^\"']*?no=(\d+)[^\"']*?type=theme")
-ITEM_LINK = re.compile(r"/item/main\.naver\?code=(\w{6})")
 CACHE_PATH = Path(".cache/themes.json")
 
 
@@ -100,52 +95,42 @@ def market_snapshot(base: str) -> pd.DataFrame:
 
 # --- 테마 ----------------------------------------------------------------
 
-def _get(url: str, diag: list[str] | None = None) -> str:
+def _get_json(url: str, diag: list[str] | None = None) -> dict | None:
     for attempt in range(3):
         try:
             resp = requests.get(url, headers=HEADERS, timeout=15)
             if diag is not None and not diag:
-                # 첫 응답의 상태를 남겨 실패 원인을 로그로 추적한다
-                diag.append(
-                    f"status={resp.status_code} final_url={resp.url} "
-                    f"len={len(resp.content)} type={resp.headers.get('Content-Type')}"
-                )
+                # 첫 응답의 상태를 남겨 실패 원인을 추적한다
+                diag.append(f"status={resp.status_code} url={resp.url} len={len(resp.content)}")
+            if resp.status_code == 404:
+                return None  # 마지막 페이지를 넘긴 경우
             resp.raise_for_status()
-            enc = (resp.encoding or "").lower()
-            resp.encoding = enc if enc and enc != "iso-8859-1" else "euc-kr"
-            return resp.text
-        except requests.RequestException as exc:
+            return resp.json()
+        except (requests.RequestException, ValueError) as exc:
             log.warning("요청 실패(%d/3) %s: %s", attempt + 1, url, exc)
             if diag is not None and not diag:
                 diag.append(f"error={exc}")
             time.sleep(2 * (attempt + 1))
-    return ""
+    return None
 
 
-def fetch_naver_themes(max_pages: int = 15, pause: float = 0.15) -> dict[str, list[str]]:
-    """네이버 증권 테마: 테마명 -> 종목코드 목록. 실패하면 빈 dict."""
+def fetch_naver_themes(page_size: int = 100, pause: float = 0.12) -> dict[str, list[str]]:
+    """네이버 증권 테마: 테마명 -> 종목코드 목록. 실패하면 빈 dict.
+
+    2026년 10월 기준 PC 테마 페이지(finance.naver.com)는 새 사이트로 넘어가
+    화면을 스크립트로 그리므로, 같은 데이터를 주는 모바일 JSON API를 쓴다.
+    """
     diag: list[str] = []
-    themes: dict[str, str] = {}
-    for page in range(1, max_pages + 1):
-        html = _get(f"{NAVER}/sise/theme.naver?page={page}", diag if page == 1 else None)
-        if not html:
-            break
-        soup = BeautifulSoup(html, "lxml")
-        found = 0
-        for a in soup.find_all("a", href=True):
-            m = THEME_LINK.search(a["href"])
-            if not m:
-                continue
-            no = m.group(1) or m.group(2)
-            name = a.get_text(strip=True)
-            if name and no not in themes.values():
-                themes[name] = no
-                found += 1
-        if found == 0:
-            if page == 1:
-                snippet = re.sub(r"\s+", " ", html[:300])
-                log.warning("네이버 테마 목록 파싱 실패. 응답 앞부분: %s", snippet)
-                diag.append(f"파싱 실패, 응답 앞부분: {snippet[:150]}")
+    themes: dict[str, int] = {}
+    for page in range(1, 20):
+        data = _get_json(f"{NAVER_API}/theme?page={page}&pageSize={page_size}",
+                         diag if page == 1 else None)
+        groups = (data or {}).get("groups") or []
+        for g in groups:
+            if g.get("name") and g.get("no") is not None:
+                themes[g["name"]] = g["no"]
+        total = (data or {}).get("totalCount") or 0
+        if not groups or len(themes) >= total:
             break
         time.sleep(pause)
 
@@ -158,13 +143,17 @@ def fetch_naver_themes(max_pages: int = 15, pause: float = 0.15) -> dict[str, li
 
     theme_map: dict[str, list[str]] = {}
     for name, no in themes.items():
-        html = _get(f"{NAVER}/sise/sise_group_detail.naver?type=theme&no={no}")
-        if html:
-            codes = sorted(set(ITEM_LINK.findall(html)))
-            if codes:
-                theme_map[name] = codes
+        codes: list[str] = []
+        for page in range(1, 10):
+            data = _get_json(f"{NAVER_API}/theme/{no}?page={page}&pageSize={page_size}")
+            stocks = (data or {}).get("stocks") or []
+            codes += [s["itemCode"] for s in stocks if s.get("itemCode")]
+            if len(stocks) < page_size:
+                break
+        if codes:
+            theme_map[name] = sorted(set(codes))
         time.sleep(pause)
-    log.info("네이버 테마 %d개 수집", len(theme_map))
+    log.info("네이버 테마 %d개 수집 (목록 %d개)", len(theme_map), len(themes))
     return theme_map
 
 
