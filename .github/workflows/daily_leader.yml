@@ -28,7 +28,14 @@ jobs:
 
       - name: 의존성 설치
         run: pip install -r requirements.txt
-
+        
+      - name: 테마 캐시 복원
+        uses: actions/cache@v4
+        with:
+          path: .cache
+          key: themes-${{ github.run_id }}
+          restore-keys: themes-
+          
       - name: 스크리닝 및 노션 적재
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
