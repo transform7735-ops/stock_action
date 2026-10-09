@@ -49,6 +49,14 @@ jobs:
             python main.py
           fi
 
+      # 네이버 테마 수집이 실패한 날, 직전에 성공한 테마 목록(주도주 스크리닝과 공유)을 쓰기 위한 캐시
+      - name: 테마 캐시 복원
+        uses: actions/cache@v4
+        with:
+          path: .cache
+          key: themes-${{ github.run_id }}
+          restore-keys: themes-
+
       # 엑셀 수식의 계산값을 채우기 위한 LibreOffice (노션·폰 미리보기에서도 숫자가 보이게)
       - name: LibreOffice 설치
         run: |

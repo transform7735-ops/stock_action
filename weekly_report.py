@@ -30,7 +30,8 @@ from pathlib import Path
 import pandas as pd
 import requests
 
-from report_builder import RAW_COLUMNS, build_workbook
+from report_builder import RAW_COLUMNS, build_workbook, normalize
+import theme_analysis
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
 log = logging.getLogger("weekly_report")
@@ -156,6 +157,32 @@ def _table(header: list[str], rows: list[list]) -> dict:
                                        "has_row_header": False, "children": [row(header)] + [row(r) for r in rows]}}
 
 
+def theme_blocks(info: dict, eok) -> list:
+    """노션 '테마별 분석' 섹션 블록."""
+    th = info.get("themes")
+    if not th:
+        return []
+    blocks = [{"type": "heading_2", "heading_2": {"rich_text": _rt("테마별 분석")}},
+              {"type": "paragraph", "paragraph": {"rich_text": _rt(
+                  f"출처: {th['source']} · 수급 종목이 2개 이상 모인 테마만 · 한 종목이 여러 테마에 속하면 모두 포함")}}]
+    blocks += [{"type": "bulleted_list_item", "bulleted_list_item": {"rich_text": _rt(t)}} for t in th["insights"]]
+    short = lambda names: ", ".join(names[:4]) + (" 외" if len(names) > 4 else "")
+    label = {"외국인": "외국인", "기관합계": "기관", "연기금": "연기금"}
+    who = lambda t: "·".join(v for k, v in label.items() if t[k] > 0) or "-"
+    if th["current"]:
+        blocks.append({"type": "heading_3", "heading_3": {"rich_text": _rt(f"이번 주 수급이 모인 테마 ({info['week']})")}})
+        blocks.append(_table(["테마", "종목수", "순매수 합계", "매수 주체", "상태", "구성 종목"],
+                             [[t["테마"], t["종목수"], eok(t["합계"]), who(t), t["상태"], short(t["종목"])]
+                              for t in th["current"][:10]]))
+    if th["cumulative"]:
+        blocks.append({"type": "heading_3", "heading_3": {"rich_text": _rt(
+            f"최근 {len(info['window'])}주 누적 테마 vs 이번 주")}})
+        blocks.append(_table(["테마", "누적 합계", "이번 주", "상태", f"등장(/{len(info['window'])}주)", "구성 종목"],
+                             [[t["테마"], eok(t["합계"]), eok(t["이번주"]), t["상태"], t["등장주수"], short(t["종목"])]
+                              for t in th["cumulative"][:10]]))
+    return blocks
+
+
 def notion_report(info: dict, path: Path) -> str | None:
     token, parent = os.environ.get("NOTION_TOKEN"), os.environ.get("NOTION_REPORT_PAGE_ID")
     if not (token and parent):
@@ -176,15 +203,18 @@ def notion_report(info: dict, path: Path) -> str | None:
         cursor = data["next_cursor"]
 
     eok = lambda v: f"{v:,.0f}" if v else "-"
+    stock_themes = (info.get("themes") or {}).get("stock_themes", {})
     children = [
         {"type": "callout", "callout": {"icon": {"type": "emoji", "emoji": "📌"},
                                         "rich_text": _rt(f"{info['week']} 기준 · 최근 {len(info['window'])}주 누적 · 금액 억원 · 주체별 상위 10종목 기준")}},
         {"type": "heading_2", "heading_2": {"rich_text": _rt("핵심 요약")}},
         *[{"type": "bulleted_list_item", "bulleted_list_item": {"rich_text": _rt(t)}} for t in info["insights"]],
         {"type": "heading_2", "heading_2": {"rich_text": _rt("이번 주 수급 신호판")}},
-        _table(["종목명", "외국인", "기관합계", "연기금", "참여", "연속(일)", "주간등락(%)", "신호"],
+        _table(["종목명", "외국인", "기관합계", "연기금", "참여", "연속(일)", "주간등락(%)", "신호", "대표 테마"],
                [[s["종목명"], eok(s["외국인"]), eok(s["기관합계"]), eok(s["연기금"]), s["참여"], s["연속"],
-                 f"{s['등락']:+.2f}", s["신호"] or "-"] for s in info["signals"]]),
+                 f"{s['등락']:+.2f}", s["신호"] or "-", ", ".join(stock_themes.get(s["종목명"], [])) or "-"]
+                for s in info["signals"]]),
+        *theme_blocks(info, eok),
         {"type": "heading_2", "heading_2": {"rich_text": _rt(f"최근 {len(info['window'])}주 누적 상위 10")}},
         _table(["순위", "종목명", "외국인", "기관합계", "연기금", "합계"],
                [[i + 1, c["종목명"], eok(c.get("외국인", 0)), eok(c.get("기관합계", 0)), eok(c.get("연기금", 0)),
@@ -192,7 +222,7 @@ def notion_report(info: dict, path: Path) -> str | None:
         {"type": "heading_2", "heading_2": {"rich_text": _rt("엑셀 원본")}},
     ]
     children.append({"type": "paragraph", "paragraph": {"rich_text": _rt(
-        "아래 첨부 엑셀은 PC의 '주간 수급 분석' 폴더로 자동 동기화됩니다 (tools/sync_reports.ps1).")}})
+        "첨부 엑셀에는 '수급분석'(피벗·차트)과 '테마분석' 시트가 들어 있습니다.")}})
     page = notion_call("POST", "/pages", token, json={
         "parent": {"page_id": parent}, "icon": {"type": "emoji", "emoji": "📊"},
         "properties": {"title": {"title": _rt(title)}}, "children": children})
@@ -223,6 +253,8 @@ def main() -> int:
     ap.add_argument("--out", default="reports", help="엑셀을 저장할 폴더")
     ap.add_argument("--no-deliver", action="store_true", help="노션 보고서를 만들지 않는다")
     ap.add_argument("--no-recalc", action="store_true")
+    ap.add_argument("--no-themes", action="store_true", help="테마별 분석을 넣지 않는다")
+    ap.add_argument("--themes-json", help="네이버 대신 이 JSON(테마명 -> 종목코드 목록)으로 테마 분석")
     args = ap.parse_args()
 
     if args.from_xlsx:
@@ -237,7 +269,17 @@ def main() -> int:
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     tmp = out_dir / "_building.xlsx"
-    info = build_workbook(df, str(tmp))
+    themes = None
+    if not args.no_themes:
+        if args.themes_json:
+            tmap, source = json.loads(Path(args.themes_json).read_text(encoding="utf-8")), "테마 파일"
+        else:
+            tmap, source = theme_analysis.load_theme_map()
+        themes = theme_analysis.analyze(normalize(df), tmap, source)
+        log.info("테마 분석: %s · 이번 주 %d개 · 누적 %d개", source, len(themes["current"]), len(themes["cumulative"]))
+        if not tmap:
+            gh_annotate("warning", f"테마 분석 생략: {source}")
+    info = build_workbook(df, str(tmp), themes=themes)
     path = out_dir / info["filename"]
     tmp.replace(path)
     if not args.no_recalc:
@@ -246,7 +288,7 @@ def main() -> int:
     gh_annotate("notice", f"{info['filename']} 생성 · " + info["insights"][1][:120])
 
     if args.no_deliver:
-        print(json.dumps({k: info[k] for k in ("week", "filename", "insights")}, ensure_ascii=False, indent=2))
+        print(json.dumps({k: info[k] for k in ("week", "filename", "insights")} | {"theme_insights": (themes or {}).get("insights")}, ensure_ascii=False, indent=2))
         return 0
 
     try:

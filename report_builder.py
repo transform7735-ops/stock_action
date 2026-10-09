@@ -22,6 +22,7 @@ from openpyxl.utils import get_column_letter
 
 RAW_SHEET = "주간 수급 데이터"
 OUT_SHEET = "수급분석"
+THEME_SHEET = "테마분석"
 INV = ["외국인", "기관합계", "연기금"]
 # 노션 내보내기와 같은 열 순서 (수식이 열 위치가 아니라 이름으로 찾으므로 순서가 바뀌어도 된다)
 RAW_COLUMNS = ["종목명", "기준주간", "뉴스", "레코드키", "리포트", "비고", "섹터", "수집시각",
@@ -197,8 +198,92 @@ def write_raw(wb, df: pd.DataFrame):
     return ws
 
 
-def build_workbook(df: pd.DataFrame, path: str) -> dict:
-    """엑셀을 만들어 path에 저장하고, 노션·메일에 쓸 요약 정보를 돌려준다."""
+def write_theme_sheet(wb, themes: dict, cur: str, n_win: int) -> None:
+    """'테마분석' 시트: 이번 주 테마 순위 · 최근 n주 누적 테마 · 종목별 대표 테마 (값으로 기록)."""
+    from theme_analysis import commentary
+
+    ws = wb.create_sheet(THEME_SHEET, 1)
+    s = _Sheet(ws)
+    s.put("A1", "테마별 수급 분석", "t", border=False)
+    s.put("A2", f"출처: {themes['source']} · 수급 종목이 {2}개 이상 모인 테마만 · 한 종목이 여러 테마에 속하면 모두 포함"
+                "(테마 합계끼리 중복 가능) · 구성 종목이 같은 테마는 ' / '로 묶음 · 금액 억원", "note", border=False)
+    s.put("A3", "상태: 새로 부상 = 직전 3주 없음 → 이번 주 등장 · 가속/둔화 = 이번 주가 직전 3주 평균의 1.5배 이상/0.5배 이하",
+          "note", border=False)
+    r = 5
+    for line in themes["insights"]:
+        s.put(f"A{r}", "· " + line, fill=FILL_BOX, border=False)
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=10)
+        r += 1
+
+    def table(start, title, note, items, with_cur):
+        s.section(start, title, note)
+        heads = ["테마", "종목수", "외국인", "기관합계", "연기금", "합계"] + (["이번 주"] if with_cur else []) \
+            + ["상태", "등장 주수", "구성 종목 (금액순)"]
+        s.header(start + 2, 1, heads)
+        row = start + 3
+        for t in items:
+            vals = [t["테마"], t["종목수"], t["외국인"], t["기관합계"], t["연기금"], t["합계"]] \
+                + ([t["이번주"]] if with_cur else []) + [t["상태"], t["등장주수"], ", ".join(t["종목"])]
+            for j, v in enumerate(vals):
+                cl = get_column_letter(1 + j)
+                is_num = isinstance(v, float)
+                s.put(f"{cl}{row}", v, "b" if j == 0 else "base", NUM if is_num else None,
+                      align=CENTER if j in (1,) or heads[j] in ("상태", "등장 주수") else None)
+            row += 1
+        return start + 3, row - 1, len(heads)
+
+    if themes["current"]:
+        f1, l1, _ = table(r + 1, f"1. 이번 주({cur}) 수급이 모인 테마", "합계 큰 순",
+                          themes["current"][:20], with_cur=False)
+        ch = BarChart()
+        ch.type, ch.grouping, ch.overlap = "bar", "stacked", 100
+        ch.title = "이번 주 테마별 순매수 (억원)"
+        n = min(10, l1 - f1 + 1)
+        for j in range(3):
+            ser = Series(Reference(ws, min_col=3 + j, min_row=f1, max_row=f1 + n - 1))
+            ser.tx = SeriesLabel(strRef=StrRef(f"'{THEME_SHEET}'!${get_column_letter(3 + j)}${f1 - 1}"))
+            ch.series.append(ser)
+        ch.set_categories(Reference(ws, min_col=1, min_row=f1, max_row=f1 + n - 1))
+        ch.x_axis.scaling.orientation = "maxMin"
+        ch.x_axis.tickLblSkip = 1
+        ch.y_axis.numFmt = "#,##0"
+        ch.legend.position = "b"
+        ch.height, ch.width = 9, 16
+        ch.x_axis.delete = ch.y_axis.delete = False
+        ws.add_chart(ch, f"L{r + 1}")
+        r = max(l1, f1 + 18) + 3
+    else:
+        s.put(f"A{r + 1}", "이번 주에는 수급 종목이 2개 이상 모인 테마가 없습니다.", "note", border=False)
+        r += 3
+    if themes["cumulative"]:
+        _, l2, _ = table(r, f"2. 최근 {n_win}주 누적 테마 (이번 주와 비교)", "누적 합계 큰 순. '이번 주'가 0이면 이번 주에 빠진 테마",
+                         themes["cumulative"][:25], with_cur=True)
+        r = l2 + 3
+        s.section(r, "3. 테마 한 줄 해설 (누적 상위 10)", "규칙 기반 자동 문장")
+        for i, t in enumerate(themes["cumulative"][:10]):
+            s.put(f"A{r + 2 + i}", f"{t['테마']}", "b")
+            s.put(f"B{r + 2 + i}", commentary(t))
+            ws.merge_cells(start_row=r + 2 + i, start_column=2, end_row=r + 2 + i, end_column=11)
+        r = r + 2 + min(10, len(themes["cumulative"])) + 2
+    if themes["stock_themes"]:
+        s.section(r, "4. 이번 주 수급 종목의 대표 테마", "수급 종목이 모인 테마 중 최대 2개")
+        s.header(r + 2, 1, ["종목명", "대표 테마"])
+        for i, (name, ts) in enumerate(themes["stock_themes"].items()):
+            s.put(f"A{r + 3 + i}", name, "b")
+            s.put(f"B{r + 3 + i}", ", ".join(ts) or "-")
+            ws.merge_cells(start_row=r + 3 + i, start_column=2, end_row=r + 3 + i, end_column=6)
+    widths = {"A": 30, "B": 9, "C": 11, "D": 11, "E": 11, "F": 11, "G": 11, "H": 11, "I": 10, "J": 50}
+    for k, v in widths.items():
+        ws.column_dimensions[k].width = v
+    ws.sheet_view.showGridLines = False
+    ws.freeze_panes = "A4"
+
+
+def build_workbook(df: pd.DataFrame, path: str, themes: dict | None = None) -> dict:
+    """엑셀을 만들어 path에 저장하고, 노션에 쓸 요약 정보를 돌려준다.
+
+    themes: theme_analysis.analyze() 결과. 주면 '테마분석' 시트와 요약 한 줄이 추가된다.
+    """
     df = normalize(df)
     weeks = sorted(df["주차"].unique())
     if not weeks:
@@ -227,6 +312,11 @@ def build_workbook(df: pd.DataFrame, path: str) -> dict:
     s.put("A3", "※ 원본이 '주체별 상위 10종목'만 담고 있어 합계는 시장 전체 순매수가 아니라 '상위 10종목 매수 강도'로 읽어야 합니다. "
                 "휴장일이 낀 주는 거래일이 적습니다.", "note", border=False)
     insights = build_insights(df)
+    if themes and themes.get("current"):
+        top = themes["current"][:3]
+        insights.append(f"⑦ 테마: 이번 주 수급이 가장 몰린 테마는 "
+                        + ", ".join(f"{t['테마'].split(' / ')[0]}({t['종목수']}종목)" for t in top)
+                        + f" → 자세한 내용은 '{THEME_SHEET}' 시트.")
     s.put("A5", f"핵심 요약 ({date.today().isoformat()} 자동 작성, {week_title(cur)} 기준)", "b", fill=FILL_BOX, border=False)
     ws.merge_cells("A5:L5")
     for i, text in enumerate(insights):
@@ -370,6 +460,8 @@ def build_workbook(df: pd.DataFrame, path: str) -> dict:
         ws.column_dimensions[k].width = v
     ws.sheet_view.showGridLines = False
     ws.freeze_panes = "A5"
+    if themes:
+        write_theme_sheet(wb, themes, cur, len(win))
     wb.active = 0
     wb.calculation.fullCalcOnLoad = True  # 엑셀이 열 때 항상 다시 계산
     wb.save(path)
@@ -405,4 +497,5 @@ def build_workbook(df: pd.DataFrame, path: str) -> dict:
         "week": cur, "title": week_title(cur), "filename": report_filename(cur),
         "weeks": weeks, "window": win, "insights": insights, "signals": signals,
         "cumulative": [{"종목명": n, **{c: float(cum.loc[n, c]) for c in cum.columns}} for n in cum.index],
+        "themes": themes,
     }
