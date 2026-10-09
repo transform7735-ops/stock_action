@@ -41,7 +41,7 @@ GitHub에서 새 저장소를 만들고 이 폴더의 파일을 전부 올린다
 ### 4. 첫 실행
 
 Actions 탭 → "주간 수급 데이터 수집" → Run workflow.
-`week` 칸을 비우면 지난주, 채우면 그 주차를 수집한다.
+`week` 칸을 비우면 가장 최근에 끝난 주(토·일 실행 시 이번 주), 채우면 그 주차를 수집한다.
 
 ---
 
@@ -53,7 +53,7 @@ Actions 탭 → "주간 수급 데이터 수집" → Run workflow.
 pip install -r requirements.txt
 export NOTION_TOKEN=... NOTION_DATABASE_ID=...
 
-python main.py                          # 지난주
+python main.py                          # 가장 최근에 끝난 주
 python main.py --week 2026-W35          # 특정 주차
 python main.py --weeks 2026-W30 2026-W35  # 구간 일괄
 python main.py --dry-run                # 노션에 쓰지 않고 확인만

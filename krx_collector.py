@@ -63,13 +63,13 @@ class Week:
 def last_completed_week(today: date | None = None) -> Week:
     """오늘 기준으로 가장 최근에 끝난 주(월~금)를 반환한다.
 
-    월요일에 실행하면 지난주가 잡힌다. 주중에 수동 실행해도
-    이번 주가 아직 안 끝났으므로 지난주를 잡는다.
+    토·일요일에 실행하면 방금 끝난 이번 주가 잡힌다 (토요일 정기 실행).
+    월~금에 실행하면 이번 주가 아직 안 끝났으므로 지난주를 잡는다.
     """
     today = today or date.today()
     this_monday = today - timedelta(days=today.weekday())
-    last_monday = this_monday - timedelta(days=7)
-    return Week(monday=last_monday, friday=last_monday + timedelta(days=4))
+    monday = this_monday if today.weekday() >= 5 else this_monday - timedelta(days=7)
+    return Week(monday=monday, friday=monday + timedelta(days=4))
 
 
 def week_from_label(label: str) -> Week:
