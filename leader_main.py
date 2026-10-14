@@ -2,7 +2,7 @@
 홍인기식 일일 스크리닝 -> 노션 '주도주 스크리닝 (홍인기 단타)' DB 적재.
 
 사용법:
-    python leader_main.py                    # 가장 최근 영업일
+    python leader_main.py                    # 가장 최근 확정 영업일 (18시 전이면 전 영업일)
     python leader_main.py --date 2026-10-07  # 특정일 소급
     python leader_main.py --dry-run          # 노션에 쓰지 않고 결과만 출력
     python leader_main.py --no-themes        # 네이버 테마 수집 생략
@@ -16,7 +16,8 @@ import os
 import re
 import sys
 import time
-from datetime import date
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from leader_screener import judge_test, load_config, resolve_base_date, screen
 from notion_sync import NotionSync, _stock_urls
@@ -27,6 +28,10 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 log = logging.getLogger("leader")
+
+KST = ZoneInfo("Asia/Seoul")
+# KRX 일별 확정치가 올라오는 시각. 이보다 이르면 오늘 데이터는 장중·미확정이다.
+CONFIRM_HOUR = 18
 
 
 class LeaderNotionSync(NotionSync):
@@ -183,6 +188,18 @@ def parse_date(text: str | None) -> date | None:
     return date(y, m, d)
 
 
+def default_target(now: datetime | None = None) -> date:
+    """날짜 입력이 없을 때의 기준일 후보.
+
+    GitHub 정기 실행은 몇 시간씩 늦게 시작되곤 해서, 다음 날 장중에 돌면
+    미확정 데이터로 수집하고 전날을 빠뜨린다. 18시 전이면 어제를 후보로 삼는다
+    (휴장일은 resolve_base_date가 직전 영업일로 당긴다).
+    """
+    now = now or datetime.now(KST)
+    today = now.date()
+    return today if now.hour >= CONFIRM_HOUR else today - timedelta(days=1)
+
+
 def resolve_with_retry(target: date | None) -> str:
     """KRX 첫 접속이 일시적으로 실패하는 경우가 있어 몇 번 다시 시도한다."""
     last = None
@@ -207,14 +224,20 @@ def main() -> int:
 
 def run() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--date", help="기준일 YYYY-MM-DD. 비우면 가장 최근 영업일")
+    parser.add_argument(
+        "--date", help="기준일 YYYY-MM-DD. 비우면 가장 최근 확정 영업일 (18시 전이면 전 영업일)"
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--no-themes", action="store_true")
     args = parser.parse_args()
 
     target = parse_date(args.date)
+    auto = target is None
+    if auto:
+        target = default_target()
+        log.info("날짜 입력 없음: %s 이전(포함) 가장 가까운 영업일로 수집한다.", target)
     base = resolve_with_retry(target)
-    if target and base != target.strftime("%Y%m%d"):
+    if not auto and base != target.strftime("%Y%m%d"):
         log.info("%s는 휴장일이라 직전 영업일 %s 기준으로 수집한다.", target, base)
 
     cfg = load_config()

@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       date:
-        description: '기준일 (예: 2026-10-07). 비우면 가장 최근 영업일.'
+        description: '기준일 (예: 2026-10-07). 비우면 가장 최근 확정 영업일(18시 전이면 전 영업일).'
         required: false
         type: string
 
