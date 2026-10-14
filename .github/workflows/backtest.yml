@@ -1,0 +1,63 @@
+name: 종가베팅 백테스트
+
+on:
+  workflow_dispatch:
+    inputs:
+      start:
+        description: '시작일 (예: 2025-01-01). 비우면 config.json의 기간_개월만큼 거슬러 올라감'
+        required: false
+        type: string
+      end:
+        description: '종료일 (예: 2026-10-14). 비우면 오늘'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: 의존성 설치
+        run: pip install -r requirements.txt
+
+      # 한 번 받은 일봉은 저장해 두고 다음 실행부터는 새 날짜만 받는다
+      - name: 시세 캐시 복원
+        uses: actions/cache@v4
+        with:
+          path: .cache/backtest
+          key: backtest-ohlcv-${{ github.run_id }}
+          restore-keys: backtest-ohlcv-
+
+      - name: 백테스트 및 노션 보고서
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          # 노션 '📈 투자 3원칙 > 🧪 종가베팅 백테스트' 페이지
+          NOTION_BACKTEST_PAGE_ID: 3f9ce99325d48183853ef8c29469e87c
+          KRX_ID: ${{ secrets.KRX_ID }}
+          KRX_PW: ${{ secrets.KRX_PW }}
+          TZ: Asia/Seoul
+          START: ${{ inputs.start }}
+          END: ${{ inputs.end }}
+        run: |
+          ARGS=()
+          if [ -n "$START" ]; then ARGS+=(--start "$START"); fi
+          if [ -n "$END" ]; then ARGS+=(--end "$END"); fi
+          python backtest/closing_bet.py "${ARGS[@]}"
+
+      - name: 결과 파일 보관
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: closing-bet-backtest
+          path: reports/backtest/
+          if-no-files-found: ignore
